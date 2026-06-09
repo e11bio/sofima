@@ -151,8 +151,8 @@ class WarpTest(absltest.TestCase):
     self.assertEqual(warped[1, 0, 30, 25], 200)
     self.assertEqual(warped[2, 0, 30, 25], 300)
 
-  def test_ndimage_warp_multichannel(self):
-    """Tests ndimage_warp does not break with typical usage."""
+  def test_ndimage_warp_translate(self):
+    """Tests ndimage_warp with a simple translation."""
     image = np.zeros((100, 100), dtype=np.uint16)
     image[40, 30] = 42
     image[50, 40] = 16

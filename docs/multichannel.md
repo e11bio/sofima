@@ -25,7 +25,7 @@ Throughout SOFIMA, image data follows these conventions:
 | 2D multichannel | `(c, y, x)` | Channel-first |
 | 3D single-channel | `(z, y, x)` | Volumetric |
 | 3D multichannel | `(c, z, y, x)` | Channel-first volumetric |
-| Warping input | `(n, z, y, x)` | `n` channels warped independently |
+| Warping input | `(n, z, y, x)` | `n` channels warped with shared coordinate map |
 
 ## Usage Guide
 

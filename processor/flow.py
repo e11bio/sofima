@@ -168,7 +168,9 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
     input_ndarray = subvol.data
     beam_utils.counter(self.namespace, 'subvolumes-started').inc()
 
-    assert input_ndarray.shape[0], 'Input volume should have at least 1 channel.'
+    assert input_ndarray.shape[0] >= 1, (
+        'Input volume should have at least 1 channel.'
+    )
     if self._config.channel is not None:
       image = input_ndarray[self._config.channel, ...]
     else:
