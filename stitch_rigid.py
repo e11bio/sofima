@@ -211,13 +211,16 @@ def compute_coarse_offsets(
   """
 
   def _select_channel(tile):
-    if channel is not None:
-      if isinstance(channel, int):
-        return tile[channel, ...]
-      else:
-        # Return stacked channels for multi-channel averaging.
-        return np.stack([tile[c, ...] for c in channel], axis=0)
-    return tile
+    if channel is None:
+      if tile.ndim == 3:
+        raise ValueError(
+            "Multichannel tiles (c, y, x) require an explicit 'channel' argument."
+        )
+      return tile
+    if isinstance(channel, int):
+      return tile[channel, ...]
+    # Return stacked channels for multi-channel averaging.
+    return np.stack([tile[c, ...] for c in channel], axis=0)
 
   def _find_offset(estimate_fn, pre, post, overlaps, max_ortho_shift, axis, masks=None):
     def _is_valid_offset(offset, axis):
