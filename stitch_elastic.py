@@ -96,8 +96,9 @@ def compute_flow_map3d(
 
   Args:
     tile_map: maps (x, y) tile coordinates to ndarray-like objects storing
-      individual tile data; each object should have shape [c, z, y, x] (or
-      [1, z, y, x] for single-channel) and allow standard indexing
+      individual tile data; each object should have shape [1, z, y, x] and
+      allow standard indexing. For multichannel data, tiles should have shape
+      [c, z, y, x] and 'channel' must be specified explicitly.
     tile_shape: XYZ shape of an individual 3d tile
     offset_map: [3, 1, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XYZ offset between the tiles (x,y) and (x+1,y) or
@@ -107,9 +108,8 @@ def compute_flow_map3d(
     stride: ZYX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
     channel: specifies which channel(s) to use for flow estimation.
-      - None (default): uses all channels. For single-channel tiles
-        [1, z, y, x], this is equivalent to the prior behavior of using
-        channel 0.
+      - None (default): assumes tiles have shape [1, z, y, x] and squeezes
+        the first dimension (identical to prior behavior).
       - int: extracts a single channel from the tile.
       - Sequence[int]: uses the specified channels, computing
         cross-correlations independently on each and averaging before peak
@@ -121,17 +121,6 @@ def compute_flow_map3d(
       (x, y) -> xyz offset at which the following tile was positioned (relative
         to its native position on the grid) before the flow was computed
   """
-  # Default to all channels when channel is not specified.
-  # For backward compatibility with [1, z, y, x] tiles, this will use
-  # the single available channel (equivalent to the old channel=0 behavior).
-  if channel is None:
-    # Determine number of channels from the first tile.
-    first_tile = next(iter(tile_map.values()))
-    num_channels = first_tile.shape[0]
-    if num_channels == 1:
-      channel = 0
-    else:
-      channel = list(range(num_channels))
   mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
   ret, offsets = {}, {}
   grid_yx_shape = offset_map.shape[-2:]
@@ -202,7 +191,12 @@ def compute_flow_map3d(
       pre = tile_pre[isec_curr.to_slice4d()]
       post = tile_post[isec_nbor.to_slice4d()]
 
-      if isinstance(channel, int):
+      if channel is None:
+        # Original behavior: squeeze the leading dimension.
+        pre = pre.squeeze(axis=0)
+        post = post.squeeze(axis=0)
+        flow_channel = None
+      elif isinstance(channel, int):
         pre = pre[channel, ...]
         post = post[channel, ...]
         flow_channel = None
@@ -238,9 +232,9 @@ def compute_flow_map(
   """Computes fine flow between two horizontally or vertically adjacent 2d tiles.
 
   Args:
-    tile_map: maps (x, y) tile coordinates to the tile image content; tiles can
-      be either 2D arrays (y, x) or multichannel arrays (c, y, x). When
-      multichannel, use the 'channel' argument to select which channel(s) to
+    tile_map: maps (x, y) tile coordinates to the tile image content; tiles
+      should be 2D arrays (y, x) for default behavior. For multichannel tiles
+      (c, y, x), specify the 'channel' argument to select which channel(s) to
       use.
     offset_map: [2, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XY offset between the tiles (x,y) and (x+1,y) or
@@ -251,9 +245,8 @@ def compute_flow_map(
     batch_size: number of flow vectors to estimate simultaneously
     channel: specifies which channel(s) to use for flow estimation when
       multichannel tiles are provided.
-      - None (default): auto-detects based on tile dimensionality. If tiles
-        are 2D (y, x), uses them as-is. If tiles are multichannel (c, y, x),
-        uses all channels for averaging.
+      - None (default): uses tiles as-is, assuming they are 2D (y, x).
+        This is identical to prior behavior.
       - int: extracts tile[channel, ...] before processing.
       - Sequence[int]: uses the specified channels, computing
         cross-correlations independently on each and averaging before peak
@@ -267,13 +260,6 @@ def compute_flow_map(
   yx_shape = offset_map.shape[-2:]
   mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
   ret, offsets = {}, {}
-
-  # Auto-detect multichannel when channel=None by checking tile dimensionality.
-  if channel is None:
-    first_tile = next(iter(tile_map.values()))
-    if first_tile.ndim == 3:
-      # Multichannel tile (c, y, x): use all channels.
-      channel = list(range(first_tile.shape[0]))
 
   pad_y = patch_size[0] // 2 // stride[0]
   pad_x = patch_size[1] // 2 // stride[1]

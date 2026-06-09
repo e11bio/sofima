@@ -168,9 +168,9 @@ def compute_coarse_offsets(
 
   Args:
     yx_shape: vertical and horizontal number of tiles
-    tile_map: maps (x, y) tile coordinate to the tile image; tiles can be either
-      2D arrays (y, x) or multichannel arrays (c, y, x). When multichannel,
-      use the 'channel' argument to select which channel(s) to use.
+    tile_map: maps (x, y) tile coordinate to the tile image; tiles should be
+      2D arrays (y, x) for default behavior. For multichannel tiles (c, y, x),
+      specify the 'channel' argument to select which channel(s) to use.
     overlaps_xy: pair of two overlap sequences to try, for NN tiles in the X and
       Y direction, respectively; these overlaps define the number of pixels in
       the given dimension used to compute the offset vector
@@ -186,9 +186,8 @@ def compute_coarse_offsets(
       define the pixels that should be masked during coarse offsets estimation.
     channel: specifies which channel(s) to use for offset estimation when
       multichannel tiles are provided.
-      - None (default): auto-detects based on tile dimensionality. If tiles
-        are 2D (y, x), uses them as-is. If tiles are multichannel (c, y, x),
-        uses all channels for averaging.
+      - None (default): uses tiles as-is, assuming they are 2D (y, x).
+        This is identical to prior behavior.
       - int: extracts tile[channel, ...] before processing.
       - Sequence[int]: uses the specified channels, computing cross-correlations
         independently on each and averaging before peak detection.

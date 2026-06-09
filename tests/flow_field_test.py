@@ -210,8 +210,8 @@ class FlowFieldTest(absltest.TestCase):
 
     np.testing.assert_array_equal(field_single, field_list)
 
-  def test_channel_none_multichannel_uses_all(self):
-    """Tests that multichannel averaging via channel=[0,1] matches explicit."""
+  def test_multichannel_explicit_all_channels(self):
+    """Tests that multichannel averaging via channel=[0,1] works correctly."""
     # Create 2-channel images where each channel has signal at the same offset.
     pre_image = np.zeros((2, 120, 120), dtype=np.float32)
     post_image = np.zeros((2, 120, 120), dtype=np.float32)
@@ -255,8 +255,8 @@ class FlowFieldTest(absltest.TestCase):
     np.testing.assert_array_equal(field[0, ...], 7 * np.ones((2, 2)))
     np.testing.assert_array_equal(field[1, ...], -10 * np.ones((2, 2)))
 
-  def test_stitch_rigid_channel_none_multichannel(self):
-    """Tests that stitch_rigid auto-detects multichannel with channel=None."""
+  def test_stitch_rigid_multichannel_explicit(self):
+    """Tests that stitch_rigid works with explicit multichannel specification."""
     from sofima import stitch_rigid
 
     # Create 2-channel tiles where both channels have consistent signal.
@@ -271,10 +271,31 @@ class FlowFieldTest(absltest.TestCase):
 
     tile_map = {(0, 0): tile_00, (1, 0): tile_10}
 
-    # channel=None should auto-detect multichannel and use all channels.
+    # Explicit channel=[0, 1] uses multichannel averaging.
     conn_x, conn_y = stitch_rigid.compute_coarse_offsets(
         (1, 2), tile_map, overlaps_xy=((100,), (100,)),
-        min_range=(0,), min_overlap=50, channel=None)
+        min_range=(0,), min_overlap=50, channel=[0, 1])
+
+    # Verify that it produces a valid (non-nan, non-inf) result.
+    self.assertFalse(np.all(np.isnan(conn_x[0, 0, 0, :])))
+
+  def test_stitch_rigid_single_channel_backward_compat(self):
+    """Tests that stitch_rigid with channel=None works with 2D tiles as before."""
+    from sofima import stitch_rigid
+
+    # Create 2D tiles (y, x) - original format.
+    tile_00 = np.zeros((200, 200), dtype=np.float32)
+    tile_10 = np.zeros((200, 200), dtype=np.float32)
+
+    tile_00[100, 150] = 1.0
+    tile_10[100, 50] = 1.0
+
+    tile_map = {(0, 0): tile_00, (1, 0): tile_10}
+
+    # channel=None with 2D tiles should work identically to original behavior.
+    conn_x, conn_y = stitch_rigid.compute_coarse_offsets(
+        (1, 2), tile_map, overlaps_xy=((100,), (100,)),
+        min_range=(0,), min_overlap=50)
 
     # Verify that it produces a valid (non-nan, non-inf) result.
     self.assertFalse(np.all(np.isnan(conn_x[0, 0, 0, :])))

@@ -85,8 +85,7 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
       batch_size: Max number of patches to process in parallel.
       channel: Specifies which channel(s) to use for flow estimation from a
         multichannel input volume.
-        - None (default): uses all available channels. For single-channel
-          inputs, this is equivalent to the prior behavior of using channel 0.
+        - None (default): uses channel 0, identical to prior behavior.
         - int: uses a single channel.
         - list[int]: uses multiple channels, computing cross-correlations
           independently on each and averaging before peak detection.
@@ -185,12 +184,8 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
       else:
         image = input_ndarray[self._config.channel, ...]
     else:
-      # Default: use all channels.
-      num_channels = input_ndarray.shape[0]
-      if num_channels == 1:
-        image = input_ndarray[0, ...]
-      else:
-        image = input_ndarray
+      # Default: use channel 0 (identical to prior behavior).
+      image = input_ndarray[0, ...]
     sel_mask = mask = None
 
     with beam_utils.timer_counter(self.namespace, 'build-mask'):

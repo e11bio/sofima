@@ -36,6 +36,7 @@ and the mesh node positions.
 SOFIMA supports multichannel image data throughout the pipeline. The `channel`
 parameter in all flow estimation entry points accepts:
 
+- **`None`** (default): Original single-channel behavior — no breaking changes.
 - **`int`**: Use a single channel for alignment.
 - **`list[int]`**: Use multiple channels — cross-correlations are computed
   independently on each channel and averaged before peak detection, providing

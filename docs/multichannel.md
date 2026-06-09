@@ -154,22 +154,21 @@ config = flow.EstimateFlow.Config(
 
 ## Default Behavior (`channel=None`)
 
-When `channel=None` (the default), SOFIMA auto-detects whether input is
-multichannel and uses all available channels for alignment:
+When `channel=None` (the default), all functions behave identically to their
+original (pre-multichannel) implementation. There are no breaking API changes:
 
-- `channel=None` in `flow_field()`: images used as-is (spatial-only arrays).
-  Higher-level functions handle auto-detection before calling `flow_field()`.
-- `channel=None` in `compute_coarse_offsets()`: auto-detects tile dimensionality.
-  2D tiles `(y, x)` are used as-is; multichannel tiles `(c, y, x)` use all
-  channels for cross-correlation averaging.
-- `channel=None` in `compute_flow_map()`: same auto-detection as above.
-- `channel=None` in `compute_flow_map3d()`: uses all channels. For single-channel
-  tiles `[1, z, y, x]`, this is equivalent to the prior `channel=0` behavior.
-- `channel=None` in `EstimateFlow.Config`: uses all input channels. For
-  single-channel inputs, this is equivalent to the prior `channel=0` behavior.
+- `channel=None` in `flow_field()`: images used as-is (assumed spatial-only).
+- `channel=None` in `compute_coarse_offsets()`: tiles used as-is (assumed 2D
+  `(y, x)`, identical to prior behavior).
+- `channel=None` in `compute_flow_map()`: tiles used as-is (assumed 2D `(y, x)`,
+  identical to prior behavior).
+- `channel=None` in `compute_flow_map3d()`: tiles assumed to have shape
+  `[1, z, y, x]` and the leading dimension is squeezed (identical to prior
+  behavior).
+- `channel=None` in `EstimateFlow.Config`: uses channel 0 (identical to prior
+  behavior).
 
-This preserves full backward compatibility: existing single-channel workflows
-produce identical results without code changes.
+To enable multichannel support, explicitly specify the `channel` parameter.
 
 ## Best Practices
 
