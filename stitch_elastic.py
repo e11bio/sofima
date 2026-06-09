@@ -193,6 +193,10 @@ def compute_flow_map3d(
 
       if channel is None:
         # Original behavior: squeeze the leading dimension.
+        if pre.shape[0] != 1 or post.shape[0] != 1:
+          raise ValueError(
+              "Multichannel tiles (c, z, y, x) require an explicit 'channel' argument."
+          )
         pre = pre.squeeze(axis=0)
         post = post.squeeze(axis=0)
         flow_channel = None
