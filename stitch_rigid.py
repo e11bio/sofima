@@ -108,13 +108,16 @@ def compute_coarse_offsets(
     min_range=(10, 100, 0),
     min_overlap=160,
     filter_size=10,
-    mask_map: MaskMap | None = None
+    mask_map: MaskMap | None = None,
+    channel: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
   """Computes a coarse offset between every neighboring tile pair.
 
   Args:
     yx_shape: vertical and horizontal number of tiles
-    tile_map: maps (x, y) tile coordinate to the tile image
+    tile_map: maps (x, y) tile coordinate to the tile image; tiles can be either
+      2D arrays (y, x) or multichannel arrays (c, y, x). When multichannel,
+      use the 'channel' argument to select which channel to use.
     overlaps_xy: pair of two overlap sequences to try, for NN tiles in the X and
       Y direction, respectively; these overlaps define the number of pixels in
       the given dimension used to compute the offset vector
@@ -128,6 +131,9 @@ def compute_coarse_offsets(
     mask_map: map from (x, y) tile coordinates to boolean arrays (same shape as
       tile images); If present, the elements of the mask evaluating to True
       define the pixels that should be masked during coarse offsets estimation.
+    channel: channel index to use for offset estimation when multichannel tiles
+      are provided. If None (default), tiles are used as-is (assumed 2D). If
+      specified, extracts tile[channel, ...] before processing.
 
   Returns:
     two arrays of shape [2, 1] + yx_shape, where the dimensions are:
@@ -146,6 +152,11 @@ def compute_coarse_offsets(
     could not be obtained. Values that cannot be computed because of missing
     tiles are set to nan.
   """
+
+  def _select_channel(tile):
+    if channel is not None:
+      return tile[channel, ...]
+    return tile
 
   def _find_offset(estimate_fn, pre, post, overlaps, max_ortho_shift, axis, masks=None):
     def _is_valid_offset(offset, axis):
@@ -222,8 +233,8 @@ def compute_coarse_offsets(
       if not ((x, y) in tile_map and (x + 1, y) in tile_map):
         continue
 
-      left = tile_map[(x, y)]
-      right = tile_map[(x + 1, y)]
+      left = _select_channel(tile_map[(x, y)])
+      right = _select_channel(tile_map[(x + 1, y)])
 
       # Load and crop overlap masks
       masks_x = None
@@ -249,8 +260,8 @@ def compute_coarse_offsets(
       if not ((x, y) in tile_map and (x, y + 1) in tile_map):
         continue
 
-      top = tile_map[(x, y)]
-      bot = tile_map[(x, y + 1)]
+      top = _select_channel(tile_map[(x, y)])
+      bot = _select_channel(tile_map[(x, y + 1)])
 
       # Load and crop overlap masks
       masks_y = None

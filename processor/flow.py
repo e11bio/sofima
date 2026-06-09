@@ -83,6 +83,8 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
         computed; this mask should have the same resolution and geometry as the
         output flow volume.
       batch_size: Max number of patches to process in parallel.
+      channel: Channel index to use for flow estimation from a multichannel
+        input volume. If None (default), expects a single-channel input.
     """
 
     patch_size: int
@@ -93,6 +95,7 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
     mask_only_for_patch_selection: bool
     selection_mask_configs: mask_lib.MaskConfigs | None
     batch_size: int
+    channel: int | None = None
 
   _config: Config
 
@@ -165,8 +168,11 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
     input_ndarray = subvol.data
     beam_utils.counter(self.namespace, 'subvolumes-started').inc()
 
-    assert input_ndarray.shape[0], 'Input volume should have 1 channel.'
-    image = input_ndarray[0, ...]
+    assert input_ndarray.shape[0], 'Input volume should have at least 1 channel.'
+    if self._config.channel is not None:
+      image = input_ndarray[self._config.channel, ...]
+    else:
+      image = input_ndarray[0, ...]
     sel_mask = mask = None
 
     with beam_utils.timer_counter(self.namespace, 'build-mask'):

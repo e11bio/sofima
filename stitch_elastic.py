@@ -90,13 +90,14 @@ def compute_flow_map3d(
     patch_size: Vector = (120, 120, 120),
     stride: Vector = (40, 40, 40),
     batch_size: int = 16,
+    channel: int | None = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 3d tiles.
 
   Args:
     tile_map: maps (x, y) tile coordinates to ndarray-like objects storing
-      individual tile data; even object should have shape [1, z, y, x] and
-      allow standard indexing
+      individual tile data; each object should have shape [c, z, y, x] (or
+      [1, z, y, x] for single-channel) and allow standard indexing
     tile_shape: XYZ shape of an individual 3d tile
     offset_map: [3, 1, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XYZ offset between the tiles (x,y) and (x+1,y) or
@@ -105,6 +106,10 @@ def compute_flow_map3d(
     patch_size: ZYX patch size in pixels
     stride: ZYX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
+    channel: channel index to use for flow estimation when multichannel tiles
+      are provided. If None, defaults to channel 0 (matching prior behavior
+      where tiles were indexed with squeeze(axis=0)). If specified, extracts
+      tile[:, channel, ...] equivalent spatial data from the tile.
 
   Returns:
     tuple of dictionaries:
@@ -112,6 +117,9 @@ def compute_flow_map3d(
       (x, y) -> xyz offset at which the following tile was positioned (relative
         to its native position on the grid) before the flow was computed
   """
+  # Default to channel 0 for backward compatibility with [1, z, y, x] tiles.
+  if channel is None:
+    channel = 0
   mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
   ret, offsets = {}, {}
   grid_yx_shape = offset_map.shape[-2:]
@@ -179,8 +187,8 @@ def compute_flow_map3d(
       offset[axis] = -isec_curr.size[axis]
       offsets[(x, y)] = tuple(offset.tolist())
 
-      pre = tile_pre[isec_curr.to_slice4d()].squeeze(axis=0)
-      post = tile_post[isec_nbor.to_slice4d()].squeeze(axis=0)
+      pre = tile_pre[isec_curr.to_slice4d()][channel, ...]
+      post = tile_post[isec_nbor.to_slice4d()][channel, ...]
 
       assert pre.shape == post.shape
 
@@ -202,11 +210,14 @@ def compute_flow_map(
     patch_size: Vector = (120, 120),
     stride: Vector = (20, 20),
     batch_size: int = 256,
+    channel: int | None = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 2d tiles.
 
   Args:
-    tile_map: maps (x, y) tile coordinates to the tile image content
+    tile_map: maps (x, y) tile coordinates to the tile image content; tiles can
+      be either 2D arrays (y, x) or multichannel arrays (c, y, x). When
+      multichannel, use the 'channel' argument to select which channel to use.
     offset_map: [2, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XY offset between the tiles (x,y) and (x+1,y) or
       (x,y+1)
@@ -214,6 +225,9 @@ def compute_flow_map(
     patch_size: YX patch size in pixels
     stride: YX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
+    channel: channel index to use for flow estimation when multichannel tiles
+      are provided. If None (default), tiles are used as-is (assumed 2D). If
+      specified, extracts tile[channel, ...] before processing.
 
   Returns:
     tuple of dictionaries:
@@ -234,6 +248,10 @@ def compute_flow_map(
 
       pre = tile_map[x, y]
       post = tile_map[x + (1 - axis), y + axis]
+
+      if channel is not None:
+        pre = pre[channel, ...]
+        post = post[channel, ...]
 
       offset = offset_map[:, y, x]  # off_x, off_y
 

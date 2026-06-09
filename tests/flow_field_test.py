@@ -124,6 +124,48 @@ class FlowFieldTest(absltest.TestCase):
     np.testing.assert_array_equal(-45 * np.ones((2, 2)), field[0, ...])
     np.testing.assert_array_equal(-50 * np.ones((2, 2)), field[1, ...])
 
+  def test_multichannel_input(self):
+    """Tests that multichannel input works with channel selection."""
+    # Create a 3-channel image where only channel 1 has the signal.
+    pre_image = np.zeros((3, 120, 120), dtype=np.uint8)
+    post_image = np.zeros((3, 120, 120), dtype=np.uint8)
+
+    pre_image[1, 60, 60] = 255
+    post_image[1, 70, 53] = 255
+
+    calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
+    field = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=1)
+
+    np.testing.assert_array_equal([4, 2, 2], field.shape)
+    np.testing.assert_array_equal(7 * np.ones((2, 2)), field[0, ...])
+    np.testing.assert_array_equal(-10 * np.ones((2, 2)), field[1, ...])
+
+  def test_multichannel_channel_zero(self):
+    """Tests that channel=0 with multichannel gives same result as 2D."""
+    pre_image_2d = np.zeros((120, 120), dtype=np.uint8)
+    post_image_2d = np.zeros((120, 120), dtype=np.uint8)
+    pre_image_2d[60, 60] = 255
+    post_image_2d[70, 53] = 255
+
+    # Wrap in multichannel with noise on other channels.
+    pre_image_mc = np.stack([
+        pre_image_2d, np.random.randint(0, 50, (120, 120), dtype=np.uint8)
+    ])
+    post_image_mc = np.stack([
+        post_image_2d, np.random.randint(0, 50, (120, 120), dtype=np.uint8)
+    ])
+
+    calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
+    field_2d = calculator.flow_field(
+        pre_image_2d, post_image_2d, patch_size=80, step=40, batch_size=4)
+    field_mc = calculator.flow_field(
+        pre_image_mc, post_image_mc, patch_size=80, step=40, batch_size=4,
+        channel=0)
+
+    np.testing.assert_array_equal(field_2d, field_mc)
+
 
 if __name__ == '__main__':
   absltest.main()

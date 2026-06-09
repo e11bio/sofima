@@ -31,6 +31,26 @@ as a dense array of relative offsets (see the module docstring in [map_utils.py]
 for details). Among other uses, this is the representation of the estimated flow fields
 and the mesh node positions.
 
+## Multichannel Support
+
+SOFIMA supports multichannel image data throughout the pipeline. The typical
+workflow for multichannel data is:
+
+1. **Flow estimation**: Compute the flow field using a single channel from the
+   multichannel input. Use the `channel` parameter in
+   `JAXMaskedXCorrWithStatsCalculator.flow_field()`, `stitch_rigid.compute_coarse_offsets()`,
+   and `stitch_elastic.compute_flow_map()` / `compute_flow_map3d()` to select
+   which channel to use for alignment.
+
+2. **Warping**: Apply the computed flow/coordinate map to all channels
+   simultaneously. The `warp_subvolume()` function accepts `[n, z, y, x]` data
+   where `n` is the number of channels, and warps each channel independently
+   using the same coordinate map.
+
+This design reflects the fact that optical flow estimation fundamentally
+computes a spatial transformation, which is then applied uniformly to all
+channels of the source data.
+
 # Example usage
 
  * [electron microscopy tile stitching](https://colab.research.google.com/github/google-research/sofima/blob/main/notebooks/em_stitching.ipynb)

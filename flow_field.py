@@ -489,14 +489,19 @@ class JAXMaskedXCorrWithStatsCalculator:
       post_targeting_field: np.ndarray | None = None,
       post_targeting_step: int | Sequence[int] | None = None,
       progress_fn: Callable[[list[T]], Iterator[T]] = _silent_fn,
+      channel: int | None = None,
   ):
     """Computes the flow field from post to pre.
 
     The flow is computed using masked cross-correlation.
 
     Args:
-      pre_image: 1st n-dim image input to cross-correlation (yx)
-      post_image: 2nd n-dim image input for cross-correlation (yx)
+      pre_image: 1st image input to cross-correlation; can be either a spatial
+        array ([z,] y, x) or a multichannel array (c, [z,] y, x). When
+        multichannel, use the 'channel' argument to select which channel to use
+        for flow estimation.
+      post_image: 2nd image input for cross-correlation; same format as
+        pre_image
       patch_size: size of patches to correlate (yx)
       step: step at which to sample patches to correlate (yx)
       pre_mask: optional mask for the 1st image (yx)
@@ -524,12 +529,20 @@ class JAXMaskedXCorrWithStatsCalculator:
         sampled (same units as 'step', yx order)
       progress_fn: function taking a list of batches of 'post' z[yx] start
         positions to process; can be used with tqdm to track progress
+      channel: channel index to use for flow estimation when multichannel images
+        are provided. If None (default), images are used as-is (assumed to be
+        spatial-only). If specified, extracts pre_image[channel, ...] and
+        post_image[channel, ...] before computing flow.
 
     Returns:
       Flow field calculated from 'post' to 'pre' at reduced resolution grid
       locations indicated by '(post_)patch_size' and 'step'. The order of the
       flow vector components is *opposite* of the image dimension order.
     """
+    if channel is not None:
+      pre_image = pre_image[channel, ...]
+      post_image = post_image[channel, ...]
+
     assert pre_image.ndim == post_image.ndim
 
     if not isinstance(patch_size, collections.abc.Sequence):
