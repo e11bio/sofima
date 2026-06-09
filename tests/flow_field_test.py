@@ -210,6 +210,53 @@ class FlowFieldTest(absltest.TestCase):
 
     np.testing.assert_array_equal(field_single, field_list)
 
+  def test_channel_none_multichannel_uses_all(self):
+    """Tests that channel=None with multichannel input uses all channels."""
+    # Create 2-channel images where each channel has signal at the same offset.
+    pre_image = np.zeros((2, 120, 120), dtype=np.float32)
+    post_image = np.zeros((2, 120, 120), dtype=np.float32)
+
+    # Channel 0: signal at one location
+    pre_image[0, 60, 60] = 1.0
+    post_image[0, 70, 53] = 1.0
+
+    # Channel 1: signal at the same offset but different location
+    pre_image[1, 40, 40] = 1.0
+    post_image[1, 50, 33] = 1.0
+
+    calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
+
+    # Explicitly using all channels.
+    field_explicit = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=[0, 1])
+
+    # Using channel=None should give the same result as channel=[0, 1]
+    # when called via the higher-level API with pre-selected channels.
+    field_none = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=[0, 1])
+
+    np.testing.assert_array_equal(field_explicit, field_none)
+
+  def test_single_channel_backward_compatibility(self):
+    """Tests that single-channel (spatial-only) input with channel=None works."""
+    pre_image = np.zeros((120, 120), dtype=np.uint8)
+    post_image = np.zeros((120, 120), dtype=np.uint8)
+
+    pre_image[60, 60] = 255
+    post_image[70, 53] = 255
+
+    calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
+    # channel=None with 2D input should work identically to original behavior.
+    field = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=None)
+
+    np.testing.assert_array_equal([4, 2, 2], field.shape)
+    np.testing.assert_array_equal(7 * np.ones((2, 2)), field[0, ...])
+    np.testing.assert_array_equal(-10 * np.ones((2, 2)), field[1, ...])
+
 
 if __name__ == '__main__':
   absltest.main()

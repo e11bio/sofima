@@ -85,7 +85,8 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
       batch_size: Max number of patches to process in parallel.
       channel: Specifies which channel(s) to use for flow estimation from a
         multichannel input volume.
-        - None (default): uses channel 0 from the input.
+        - None (default): uses all available channels. For single-channel
+          inputs, this is equivalent to the prior behavior of using channel 0.
         - int: uses a single channel.
         - list[int]: uses multiple channels, computing cross-correlations
           independently on each and averaging before peak detection.
@@ -184,7 +185,12 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
       else:
         image = input_ndarray[self._config.channel, ...]
     else:
-      image = input_ndarray[0, ...]
+      # Default: use all channels.
+      num_channels = input_ndarray.shape[0]
+      if num_channels == 1:
+        image = input_ndarray[0, ...]
+      else:
+        image = input_ndarray
     sel_mask = mask = None
 
     with beam_utils.timer_counter(self.namespace, 'build-mask'):
@@ -201,10 +207,8 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
 
     def _estimate_flow(z_prev, z_curr):
       mask_prev = mask_curr = None
-      multichannel = (
-          self._config.channel is not None
-          and isinstance(self._config.channel, list)
-      )
+      # Detect multichannel by image dimensionality: [c, z, y, x] = 4D.
+      multichannel = image.ndim == 4
       if multichannel:
         prev = image[:, z_prev, ...]
         curr = image[:, z_curr, ...]
@@ -240,10 +244,7 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
       flows = []
 
       # z-axis position depends on whether image has a channel dimension.
-      multichannel_proc = (
-          self._config.channel is not None
-          and isinstance(self._config.channel, list)
-      )
+      multichannel_proc = image.ndim == 4
       z_size = image.shape[1] if multichannel_proc else image.shape[0]
 
       if self._config.fixed_current:

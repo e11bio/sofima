@@ -186,7 +186,9 @@ def compute_coarse_offsets(
       define the pixels that should be masked during coarse offsets estimation.
     channel: specifies which channel(s) to use for offset estimation when
       multichannel tiles are provided.
-      - None (default): tiles are used as-is (assumed 2D).
+      - None (default): auto-detects based on tile dimensionality. If tiles
+        are 2D (y, x), uses them as-is. If tiles are multichannel (c, y, x),
+        uses all channels for averaging.
       - int: extracts tile[channel, ...] before processing.
       - Sequence[int]: uses the specified channels, computing cross-correlations
         independently on each and averaging before peak detection.

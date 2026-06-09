@@ -620,6 +620,8 @@ class JAXMaskedXCorrWithStatsCalculator:
       channel: specifies which channel(s) to use for flow estimation when
         multichannel images (c, [z,] y, x) are provided.
         - None (default): images are used as-is (assumed to be spatial-only).
+          Higher-level functions (stitch_rigid, stitch_elastic, processor)
+          auto-detect multichannel input and pass appropriate channel values.
         - int: extracts a single channel for flow estimation.
         - Sequence[int]: uses the specified channels, computing
           cross-correlations independently on each and averaging the results
