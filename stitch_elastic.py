@@ -90,7 +90,7 @@ def compute_flow_map3d(
     patch_size: Vector = (120, 120, 120),
     stride: Vector = (40, 40, 40),
     batch_size: int = 16,
-    channel: 'int | Sequence | None' = None,
+    channel: 'int | Sequence[int] | None' = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 3d tiles.
 
@@ -224,7 +224,7 @@ def compute_flow_map(
     patch_size: Vector = (120, 120),
     stride: Vector = (20, 20),
     batch_size: int = 256,
-    channel: 'int | Sequence | None' = None,
+    channel: 'int | Sequence[int] | None' = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 2d tiles.
 

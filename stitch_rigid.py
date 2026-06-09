@@ -162,7 +162,7 @@ def compute_coarse_offsets(
     min_overlap=160,
     filter_size=10,
     mask_map: MaskMap | None = None,
-    channel: 'int | Sequence | None' = None,
+    channel: 'int | Sequence[int] | None' = None,
 ) -> tuple[np.ndarray, np.ndarray]:
   """Computes a coarse offset between every neighboring tile pair.
 
