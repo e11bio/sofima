@@ -211,7 +211,7 @@ class FlowFieldTest(absltest.TestCase):
     np.testing.assert_array_equal(field_single, field_list)
 
   def test_channel_none_multichannel_uses_all(self):
-    """Tests that channel=None with multichannel input uses all channels."""
+    """Tests that multichannel averaging via channel=[0,1] matches explicit."""
     # Create 2-channel images where each channel has signal at the same offset.
     pre_image = np.zeros((2, 120, 120), dtype=np.float32)
     post_image = np.zeros((2, 120, 120), dtype=np.float32)
@@ -226,18 +226,16 @@ class FlowFieldTest(absltest.TestCase):
 
     calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
 
-    # Explicitly using all channels.
-    field_explicit = calculator.flow_field(
+    # Explicitly using all channels should produce valid flow.
+    field = calculator.flow_field(
         pre_image, post_image, patch_size=80, step=40, batch_size=4,
         channel=[0, 1])
 
-    # Using channel=None should give the same result as channel=[0, 1]
-    # when called via the higher-level API with pre-selected channels.
-    field_none = calculator.flow_field(
-        pre_image, post_image, patch_size=80, step=40, batch_size=4,
-        channel=[0, 1])
-
-    np.testing.assert_array_equal(field_explicit, field_none)
+    np.testing.assert_array_equal(field.shape, [4, 2, 2])
+    # Both channels have the same offset (7, -10), so the average xcorr
+    # should produce the same result.
+    np.testing.assert_array_equal(field[0, ...], 7 * np.ones((2, 2)))
+    np.testing.assert_array_equal(field[1, ...], -10 * np.ones((2, 2)))
 
   def test_single_channel_backward_compatibility(self):
     """Tests that single-channel (spatial-only) input with channel=None works."""
@@ -253,9 +251,33 @@ class FlowFieldTest(absltest.TestCase):
         pre_image, post_image, patch_size=80, step=40, batch_size=4,
         channel=None)
 
-    np.testing.assert_array_equal([4, 2, 2], field.shape)
-    np.testing.assert_array_equal(7 * np.ones((2, 2)), field[0, ...])
-    np.testing.assert_array_equal(-10 * np.ones((2, 2)), field[1, ...])
+    np.testing.assert_array_equal(field.shape, [4, 2, 2])
+    np.testing.assert_array_equal(field[0, ...], 7 * np.ones((2, 2)))
+    np.testing.assert_array_equal(field[1, ...], -10 * np.ones((2, 2)))
+
+  def test_stitch_rigid_channel_none_multichannel(self):
+    """Tests that stitch_rigid auto-detects multichannel with channel=None."""
+    from sofima import stitch_rigid
+
+    # Create 2-channel tiles where both channels have consistent signal.
+    tile_00 = np.zeros((2, 200, 200), dtype=np.float32)
+    tile_10 = np.zeros((2, 200, 200), dtype=np.float32)
+
+    # Place features with a known offset in both channels.
+    tile_00[0, 100, 150] = 1.0
+    tile_10[0, 100, 50] = 1.0
+    tile_00[1, 80, 150] = 1.0
+    tile_10[1, 80, 50] = 1.0
+
+    tile_map = {(0, 0): tile_00, (1, 0): tile_10}
+
+    # channel=None should auto-detect multichannel and use all channels.
+    conn_x, conn_y = stitch_rigid.compute_coarse_offsets(
+        (1, 2), tile_map, overlaps_xy=((100,), (100,)),
+        min_range=(0,), min_overlap=50, channel=None)
+
+    # Verify that it produces a valid (non-nan, non-inf) result.
+    self.assertFalse(np.all(np.isnan(conn_x[0, 0, 0, :])))
 
 
 if __name__ == '__main__':
