@@ -639,8 +639,8 @@ class JAXMaskedXCorrWithStatsCalculator:
 
     if use_multichannel:
       # Extract selected channels; result shape: [c, [z,] y, x]
-      pre_image = np.stack([pre_image[c, ...] for c in channel], axis=0)
-      post_image = np.stack([post_image[c, ...] for c in channel], axis=0)
+      pre_image = jnp.stack([pre_image[c, ...] for c in channel], axis=0)
+      post_image = jnp.stack([post_image[c, ...] for c in channel], axis=0)
       spatial_ndim = pre_image.ndim - 1  # Spatial dims (excluding channel)
     elif channel is not None:
       pre_image = pre_image[channel, ...]
