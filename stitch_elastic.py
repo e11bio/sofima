@@ -276,6 +276,11 @@ def compute_flow_map(
       pre = tile_map[x, y]
       post = tile_map[x + (1 - axis), y + axis]
 
+      if channel is None and pre.ndim == 3:
+        raise ValueError(
+            "Multichannel tiles (c, y, x) require an explicit 'channel' argument."
+        )
+
       # Determine channel mode for flow_field.
       if channel is not None and isinstance(channel, int):
         pre = pre[channel, ...]
@@ -288,7 +293,6 @@ def compute_flow_map(
         flow_channel = list(range(len(channel)))
       else:
         flow_channel = None
-
       offset = offset_map[:, y, x]  # off_x, off_y
 
       # The start coordinate should be aligned to a multiple of stride size.
