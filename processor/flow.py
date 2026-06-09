@@ -83,8 +83,12 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
         computed; this mask should have the same resolution and geometry as the
         output flow volume.
       batch_size: Max number of patches to process in parallel.
-      channel: Channel index to use for flow estimation from a multichannel
-        input volume. If None (default), expects a single-channel input.
+      channel: Specifies which channel(s) to use for flow estimation from a
+        multichannel input volume.
+        - None (default): uses channel 0 from the input.
+        - int: uses a single channel.
+        - list[int]: uses multiple channels, computing cross-correlations
+          independently on each and averaging before peak detection.
     """
 
     patch_size: int
@@ -95,7 +99,7 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
     mask_only_for_patch_selection: bool
     selection_mask_configs: mask_lib.MaskConfigs | None
     batch_size: int
-    channel: int | None = None
+    channel: 'int | list[int] | None' = None
 
   _config: Config
 
@@ -172,7 +176,13 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
         'Input volume should have at least 1 channel.'
     )
     if self._config.channel is not None:
-      image = input_ndarray[self._config.channel, ...]
+      if isinstance(self._config.channel, list):
+        # Multi-channel: extract selected channels, keep stacked.
+        image = np.stack(
+            [input_ndarray[c, ...] for c in self._config.channel], axis=0
+        )
+      else:
+        image = input_ndarray[self._config.channel, ...]
     else:
       image = input_ndarray[0, ...]
     sel_mask = mask = None
@@ -191,8 +201,18 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
 
     def _estimate_flow(z_prev, z_curr):
       mask_prev = mask_curr = None
-      prev = image[z_prev, ...]
-      curr = image[z_curr, ...]
+      multichannel = (
+          self._config.channel is not None
+          and isinstance(self._config.channel, list)
+      )
+      if multichannel:
+        prev = image[:, z_prev, ...]
+        curr = image[:, z_curr, ...]
+        flow_channel = list(range(image.shape[0]))
+      else:
+        prev = image[z_prev, ...]
+        curr = image[z_curr, ...]
+        flow_channel = None
 
       if mask is not None:
         mask_prev = mask[z_prev, ...]
@@ -212,26 +232,34 @@ class EstimateFlow(subvolume_processor.SubvolumeProcessor):
           mask_only_for_patch_selection=self._config.mask_only_for_patch_selection,
           selection_mask=smask,
           batch_size=self._config.batch_size,
+          channel=flow_channel,
       )
 
     with beam_utils.timer_counter(self.namespace, 'flow'):
       mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
       flows = []
 
+      # z-axis position depends on whether image has a channel dimension.
+      multichannel_proc = (
+          self._config.channel is not None
+          and isinstance(self._config.channel, list)
+      )
+      z_size = image.shape[1] if multichannel_proc else image.shape[0]
+
       if self._config.fixed_current:
         if self._config.z_stride > 0:
-          rng = range(0, image.shape[0] - 1)
-          z_curr = image.shape[0] - 1
+          rng = range(0, z_size - 1)
+          z_curr = z_size - 1
         else:
-          rng = range(1, image.shape[0])
+          rng = range(1, z_size)
           z_curr = 0
         for z_prev in rng:
           flows.append(_estimate_flow(z_prev, z_curr))
       else:
         if self._config.z_stride > 0:
-          rng = range(0, image.shape[0] - self._config.z_stride)
+          rng = range(0, z_size - self._config.z_stride)
         else:
-          rng = range(-self._config.z_stride, image.shape[0])
+          rng = range(-self._config.z_stride, z_size)
 
         for z in rng:
           flows.append(_estimate_flow(z, z + self._config.z_stride))

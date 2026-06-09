@@ -90,7 +90,7 @@ def compute_flow_map3d(
     patch_size: Vector = (120, 120, 120),
     stride: Vector = (40, 40, 40),
     batch_size: int = 16,
-    channel: int | None = None,
+    channel: 'int | Sequence | None' = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 3d tiles.
 
@@ -106,10 +106,13 @@ def compute_flow_map3d(
     patch_size: ZYX patch size in pixels
     stride: ZYX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
-    channel: channel index to use for flow estimation when multichannel tiles
-      are provided. If None, defaults to channel 0 (matching prior behavior
-      where tiles were indexed with squeeze(axis=0)). If specified, extracts
-      tile[:, channel, ...] equivalent spatial data from the tile.
+    channel: specifies which channel(s) to use for flow estimation.
+      - None: defaults to channel 0 (matching prior behavior where tiles
+        were indexed with squeeze(axis=0)).
+      - int: extracts a single channel from the tile.
+      - Sequence[int]: uses the specified channels, computing
+        cross-correlations independently on each and averaging before peak
+        detection.
 
   Returns:
     tuple of dictionaries:
@@ -187,13 +190,24 @@ def compute_flow_map3d(
       offset[axis] = -isec_curr.size[axis]
       offsets[(x, y)] = tuple(offset.tolist())
 
-      pre = tile_pre[isec_curr.to_slice4d()][channel, ...]
-      post = tile_post[isec_nbor.to_slice4d()][channel, ...]
+      pre = tile_pre[isec_curr.to_slice4d()]
+      post = tile_post[isec_nbor.to_slice4d()]
+
+      if isinstance(channel, int):
+        pre = pre[channel, ...]
+        post = post[channel, ...]
+        flow_channel = None
+      else:
+        # Multi-channel: extract selected channels.
+        pre = np.stack([pre[c, ...] for c in channel], axis=0)
+        post = np.stack([post[c, ...] for c in channel], axis=0)
+        flow_channel = list(range(len(channel)))
 
       assert pre.shape == post.shape
 
       f = mfc.flow_field(
-          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size
+          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size,
+          channel=flow_channel
       )
       ret[(x, y)] = np.pad(
           f, [[0, 0]] + [[p, p - 1] for p in pad_zyx], constant_values=np.nan
@@ -210,14 +224,15 @@ def compute_flow_map(
     patch_size: Vector = (120, 120),
     stride: Vector = (20, 20),
     batch_size: int = 256,
-    channel: int | None = None,
+    channel: 'int | Sequence | None' = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 2d tiles.
 
   Args:
     tile_map: maps (x, y) tile coordinates to the tile image content; tiles can
       be either 2D arrays (y, x) or multichannel arrays (c, y, x). When
-      multichannel, use the 'channel' argument to select which channel to use.
+      multichannel, use the 'channel' argument to select which channel(s) to
+      use.
     offset_map: [2, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XY offset between the tiles (x,y) and (x+1,y) or
       (x,y+1)
@@ -225,9 +240,13 @@ def compute_flow_map(
     patch_size: YX patch size in pixels
     stride: YX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
-    channel: channel index to use for flow estimation when multichannel tiles
-      are provided. If None (default), tiles are used as-is (assumed 2D). If
-      specified, extracts tile[channel, ...] before processing.
+    channel: specifies which channel(s) to use for flow estimation when
+      multichannel tiles are provided.
+      - None (default): tiles are used as-is (assumed 2D).
+      - int: extracts tile[channel, ...] before processing.
+      - Sequence[int]: uses the specified channels, computing
+        cross-correlations independently on each and averaging before peak
+        detection.
 
   Returns:
     tuple of dictionaries:
@@ -249,40 +268,54 @@ def compute_flow_map(
       pre = tile_map[x, y]
       post = tile_map[x + (1 - axis), y + axis]
 
-      if channel is not None:
+      # Determine channel mode for flow_field.
+      if channel is not None and isinstance(channel, int):
         pre = pre[channel, ...]
         post = post[channel, ...]
+        flow_channel = None
+      elif channel is not None:
+        # Multi-channel: extract selected channels, keep stacked.
+        pre = np.stack([pre[c, ...] for c in channel], axis=0)
+        post = np.stack([post[c, ...] for c in channel], axis=0)
+        flow_channel = list(range(len(channel)))
+      else:
+        flow_channel = None
 
       offset = offset_map[:, y, x]  # off_x, off_y
 
       # The start coordinate should be aligned to a multiple of stride size.
       rounded_offset = stride[::-1] * np.round(offset / stride[::-1])
 
+      # Spatial dimensions start at index 0 for 2D, index 1 for multichannel.
+      sdim_off = 1 if flow_channel is not None else 0
+
       overlap = -int(offset[axis])
-      overlap = pre.shape[1 - axis] - (
-          (pre.shape[1 - axis] - overlap) // stride[1 - axis] * stride[1 - axis]
+      overlap = pre.shape[sdim_off + 1 - axis] - (
+          (pre.shape[sdim_off + 1 - axis] - overlap) // stride[1 - axis] * stride[1 - axis]
       )
 
       # Offset in the direction orthogonal to the overlap.
       ortho_offset = int(rounded_offset[1 - axis])
 
-      pre_sel = list(np.index_exp[:, :])
-      post_sel = list(np.index_exp[:, :])
-      pre_sel[1 - axis] = np.s_[-overlap:]
-      post_sel[1 - axis] = np.s_[:overlap]
+      ndim_sel = pre.ndim
+      pre_sel = [np.s_[:]] * ndim_sel
+      post_sel = [np.s_[:]] * ndim_sel
+      pre_sel[sdim_off + 1 - axis] = np.s_[-overlap:]
+      post_sel[sdim_off + 1 - axis] = np.s_[:overlap]
 
       if ortho_offset > 0:  # post is shifted down relative to pre
-        pre_sel[axis] = np.s_[ortho_offset:]
-        post_sel[axis] = np.s_[:-ortho_offset]
+        pre_sel[sdim_off + axis] = np.s_[ortho_offset:]
+        post_sel[sdim_off + axis] = np.s_[:-ortho_offset]
       elif ortho_offset < 0:  # post is shifted up relative to pre
-        pre_sel[axis] = np.s_[:ortho_offset]
-        post_sel[axis] = np.s_[-ortho_offset:]
+        pre_sel[sdim_off + axis] = np.s_[:ortho_offset]
+        post_sel[sdim_off + axis] = np.s_[-ortho_offset:]
 
       pre = pre[tuple(pre_sel)]
       post = post[tuple(post_sel)]
 
       f = mfc.flow_field(
-          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size
+          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size,
+          channel=flow_channel
       )
       # The inverse flow (post, pre) is just -f, so it does not need to be
       # computed separately.

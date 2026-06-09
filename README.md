@@ -33,23 +33,33 @@ and the mesh node positions.
 
 ## Multichannel Support
 
-SOFIMA supports multichannel image data throughout the pipeline. The typical
-workflow for multichannel data is:
+SOFIMA supports multichannel image data throughout the pipeline. The `channel`
+parameter in all flow estimation entry points accepts:
 
-1. **Flow estimation**: Compute the flow field using a single channel from the
-   multichannel input. Use the `channel` parameter in
-   `JAXMaskedXCorrWithStatsCalculator.flow_field()`, `stitch_rigid.compute_coarse_offsets()`,
-   and `stitch_elastic.compute_flow_map()` / `compute_flow_map3d()` to select
-   which channel to use for alignment.
+- **`int`**: Use a single channel for alignment.
+- **`list[int]`**: Use multiple channels — cross-correlations are computed
+  independently on each channel and averaged before peak detection, providing
+  more robust alignment when multiple channels carry useful signal.
+
+### Workflow
+
+1. **Flow estimation**: Compute the flow field from multichannel input using
+   `JAXMaskedXCorrWithStatsCalculator.flow_field()`,
+   `stitch_rigid.compute_coarse_offsets()`, and
+   `stitch_elastic.compute_flow_map()` / `compute_flow_map3d()`.
+
+   ```python
+   # Use all channels for alignment (recommended when channels have signal)
+   flow = calculator.flow_field(pre, post, patch_size=80, step=40, channel=[0, 1, 2])
+
+   # Or use a single best-contrast channel
+   flow = calculator.flow_field(pre, post, patch_size=80, step=40, channel=0)
+   ```
 
 2. **Warping**: Apply the computed flow/coordinate map to all channels
    simultaneously. The `warp_subvolume()` function accepts `[n, z, y, x]` data
    where `n` is the number of channels, and warps each channel independently
    using the same coordinate map.
-
-This design reflects the fact that optical flow estimation fundamentally
-computes a spatial transformation, which is then applied uniformly to all
-channels of the source data.
 
 # Example usage
 

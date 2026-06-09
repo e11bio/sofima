@@ -441,6 +441,94 @@ def batched_xcorr_peaks(
   return peaks
 
 
+@functools.partial(
+    jax.jit,
+    static_argnames=[
+        'patch_size',
+        'mean',
+        'min_distance',
+        'threshold_rel',
+        'peak_radius',
+        'post_patch_size',
+        'num_channels',
+    ],
+)
+def batched_multichannel_xcorr_peaks(
+    pre_images: jnp.ndarray,
+    post_images: jnp.ndarray,
+    pre_mask: jnp.ndarray | None,
+    post_mask: jnp.ndarray | None,
+    patch_size: Sequence[int],
+    starts: jnp.ndarray,
+    mean: float | None,
+    num_channels: int = 1,
+    min_distance: int | Sequence[int] = 2,
+    threshold_rel: float = 0.5,
+    peak_radius: int | Sequence[int] = 5,
+    post_patch_size: Sequence[int] | None = None,
+    post_starts: jax.Array | None = None,
+) -> jnp.ndarray:
+  """Computes cross-correlations over multiple channels, averages, and finds peaks.
+
+  For each channel, the cross-correlation is computed independently. The
+  resulting cross-correlation maps are then averaged across channels before
+  peak detection, enabling alignment that benefits from information in all
+  channels simultaneously.
+
+  Args:
+    pre_images: [c, [z,] y, x] multichannel 1st image array
+    post_images: [c, [z,] y, x] multichannel 2nd image array
+    pre_mask: [[z,] y, x] mask for the 1st image (shared across channels)
+    post_mask: [[z,] y, x] mask for the 2nd image (shared across channels)
+    patch_size: ([z,] y, x) size of the patches to extract
+    starts: [b, 2 or 3] array of top-left ([z]yx) coordinates of the patches to
+      extract
+    mean: value to subtract from patches; if None, per-patch arithmetic mean
+      will be used
+    num_channels: number of channels (must match pre_images.shape[0])
+    min_distance: min. distance in pixels between peaks
+    threshold_rel: min. fraction of the max value in the input image that the
+      intensity at a prospective peak needs to exceed
+    peak_radius: radius to use for peak sharpness calculation
+    post_patch_size: ([z,] y, x) size of patches to extract from 'post_images';
+      if not specified, 'patch_size' is used
+    post_starts: [b, 2 or 3] array of top-left ([z]yx) coordinates of the
+      patches to extract from the 'post' image
+
+  Returns:
+    [b, 4 or 5] array of peak information; see _batched_peaks for details
+  """
+  del num_channels  # Used only as static arg for JIT tracing.
+
+  def _single_channel_xcorr(channel_pair):
+    pre_ch, post_ch = channel_pair
+    _, xcorr = _batched_xcorr(
+        pre_ch, post_ch, pre_mask, post_mask,
+        patch_size, starts, mean, post_patch_size, post_starts,
+    )
+    return xcorr
+
+  # Compute cross-correlations for all channels via vmap and average.
+  all_xcorr = jax.vmap(_single_channel_xcorr)((pre_images, post_images))
+  avg_xcorr = jnp.mean(all_xcorr, axis=0)
+
+  # Compute center_offset (depends only on shapes, same for all channels).
+  center_offset = (
+      np.array(patch_size) + np.array(
+          post_patch_size if post_patch_size is not None else patch_size
+      )
+  ) // 2 - 1
+
+  peaks = _batched_peaks(
+      avg_xcorr,
+      center_offset,
+      min_distance,
+      threshold_rel,
+      peak_radius,
+  )
+  return peaks
+
+
 def _silent_fn(x: list[T]) -> Iterator[T]:
   for item in x:
     yield item
@@ -489,7 +577,7 @@ class JAXMaskedXCorrWithStatsCalculator:
       post_targeting_field: np.ndarray | None = None,
       post_targeting_step: int | Sequence[int] | None = None,
       progress_fn: Callable[[list[T]], Iterator[T]] = _silent_fn,
-      channel: int | None = None,
+      channel: int | Sequence[int] | None = None,
   ):
     """Computes the flow field from post to pre.
 
@@ -498,8 +586,8 @@ class JAXMaskedXCorrWithStatsCalculator:
     Args:
       pre_image: 1st image input to cross-correlation; can be either a spatial
         array ([z,] y, x) or a multichannel array (c, [z,] y, x). When
-        multichannel, use the 'channel' argument to select which channel to use
-        for flow estimation.
+        multichannel, use the 'channel' argument to select which channel(s) to
+        use for flow estimation.
       post_image: 2nd image input for cross-correlation; same format as
         pre_image
       patch_size: size of patches to correlate (yx)
@@ -529,51 +617,74 @@ class JAXMaskedXCorrWithStatsCalculator:
         sampled (same units as 'step', yx order)
       progress_fn: function taking a list of batches of 'post' z[yx] start
         positions to process; can be used with tqdm to track progress
-      channel: channel index to use for flow estimation when multichannel images
-        are provided. If None (default), images are used as-is (assumed to be
-        spatial-only). If specified, extracts pre_image[channel, ...] and
-        post_image[channel, ...] before computing flow.
+      channel: specifies which channel(s) to use for flow estimation when
+        multichannel images (c, [z,] y, x) are provided.
+        - None (default): images are used as-is (assumed to be spatial-only).
+        - int: extracts a single channel for flow estimation.
+        - Sequence[int]: uses the specified channels, computing
+          cross-correlations independently on each and averaging the results
+          before peak detection. This enables alignment that benefits from
+          information across multiple channels simultaneously.
 
     Returns:
       Flow field calculated from 'post' to 'pre' at reduced resolution grid
       locations indicated by '(post_)patch_size' and 'step'. The order of the
       flow vector components is *opposite* of the image dimension order.
     """
-    if channel is not None:
+    # Determine whether to use multi-channel averaging.
+    use_multichannel = (
+        channel is not None and isinstance(channel, collections.abc.Sequence)
+    )
+
+    if use_multichannel:
+      # Extract selected channels; result shape: [c, [z,] y, x]
+      pre_image = np.stack([pre_image[c, ...] for c in channel], axis=0)
+      post_image = np.stack([post_image[c, ...] for c in channel], axis=0)
+      spatial_ndim = pre_image.ndim - 1  # Spatial dims (excluding channel)
+    elif channel is not None:
       pre_image = pre_image[channel, ...]
       post_image = post_image[channel, ...]
+      spatial_ndim = pre_image.ndim
+    else:
+      spatial_ndim = pre_image.ndim
 
     assert pre_image.ndim == post_image.ndim
 
     if not isinstance(patch_size, collections.abc.Sequence):
-      patch_size = (patch_size,) * pre_image.ndim
+      patch_size = (patch_size,) * spatial_ndim
 
     if post_patch_size is not None:
       if not isinstance(post_patch_size, collections.abc.Sequence):
-        post_patch_size = (post_patch_size,) * post_image.ndim
+        post_patch_size = (post_patch_size,) * spatial_ndim
     else:
       post_patch_size = patch_size
 
     if not isinstance(step, collections.abc.Sequence):
-      step = (step,) * pre_image.ndim
+      step = (step,) * spatial_ndim
 
     if pre_targeting_step is not None and not isinstance(
         pre_targeting_step, collections.abc.Sequence
     ):
-      pre_targeting_step = (pre_targeting_step,) * pre_image.ndim
+      pre_targeting_step = (pre_targeting_step,) * spatial_ndim
 
-    assert len(patch_size) == pre_image.ndim
-    assert len(post_patch_size) == post_image.ndim
-    assert len(step) == pre_image.ndim
+    assert len(patch_size) == spatial_ndim
+    assert len(post_patch_size) == spatial_ndim
+    assert len(step) == spatial_ndim
+
+    # For multichannel, compute spatial shapes from the spatial dims only.
+    if use_multichannel:
+      spatial_shape = np.array(post_image.shape[1:])
+    else:
+      spatial_shape = np.array(post_image.shape)
 
     # Initialize output flow field.
-    out_shape = (post_image.shape - (np.array(post_patch_size) - step)) // step
+    out_shape = (spatial_shape - (np.array(post_patch_size) - step)) // step
     out_sel = ()
     for s in out_shape:
       out_sel += np.index_exp[:s]
 
     output = np.full(
-        [self.non_spatial_flow_channels + pre_image.ndim] + out_shape.tolist(),
+        [self.non_spatial_flow_channels + spatial_ndim] + out_shape.tolist(),
         np.nan,
         dtype=np.float32,
     )
@@ -654,7 +765,7 @@ class JAXMaskedXCorrWithStatsCalculator:
 
         # Clip offsets that would cause the 'pre' patch to go out of bounds.
         tg_offsets = tg_offsets - np.minimum(new_starts, 0)
-        img_shape = np.array(pre_image.shape)[None, ...]
+        img_shape = np.array(spatial_shape)[None, ...]
         new_ends = new_starts + np.array(patch_size)[None, ...]
         overshoot = np.maximum(new_ends, img_shape) - img_shape
         tg_offsets = tg_offsets - overshoot
@@ -682,7 +793,7 @@ class JAXMaskedXCorrWithStatsCalculator:
 
         # Clip offsets that would cause the 'post' patch to go out of bounds.
         post_offsets = post_offsets - np.minimum(new_starts, 0)
-        img_shape = np.array(post_image.shape)[None, ...]
+        img_shape = np.array(spatial_shape)[None, ...]
         new_ends = new_starts + np.array(post_patch_size)[None, ...]
         overshoot = np.maximum(new_ends, img_shape) - img_shape
         post_offsets = post_offsets - overshoot
@@ -693,23 +804,41 @@ class JAXMaskedXCorrWithStatsCalculator:
       post_starts = np.clip(post_starts, 0, np.inf).astype(int)
 
       logging.info('.. estimating %d patches.', len(pos_zyx))
-      peaks = np.array(
-          batched_xcorr_peaks(
-              pre_image,
-              post_image,
-              pre_mask,
-              post_mask,
-              patch_size,
-              jnp.array(pre_starts),
-              self._mean,
-              post_patch_size=post_patch_size,
-              min_distance=self._min_distance,
-              peak_radius=self._peak_radius,
-              post_starts=jnp.array(post_starts),
-          )
-      )
+      if use_multichannel:
+        peaks = np.array(
+            batched_multichannel_xcorr_peaks(
+                pre_image,
+                post_image,
+                pre_mask,
+                post_mask,
+                patch_size,
+                jnp.array(pre_starts),
+                self._mean,
+                num_channels=len(channel),
+                post_patch_size=post_patch_size,
+                min_distance=self._min_distance,
+                peak_radius=self._peak_radius,
+                post_starts=jnp.array(post_starts),
+            )
+        )
+      else:
+        peaks = np.array(
+            batched_xcorr_peaks(
+                pre_image,
+                post_image,
+                pre_mask,
+                post_mask,
+                patch_size,
+                jnp.array(pre_starts),
+                self._mean,
+                post_patch_size=post_patch_size,
+                min_distance=self._min_distance,
+                peak_radius=self._peak_radius,
+                post_starts=jnp.array(post_starts),
+            )
+        )
       logging.info('.. done.')
-      d = pre_image.ndim
+      d = spatial_ndim
 
       for i, coord in enumerate(pos_zyx):
         v = peaks[i]

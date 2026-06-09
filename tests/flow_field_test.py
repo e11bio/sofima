@@ -166,6 +166,50 @@ class FlowFieldTest(absltest.TestCase):
 
     np.testing.assert_array_equal(field_2d, field_mc)
 
+  def test_multichannel_averaging(self):
+    """Tests that multi-channel averaging uses all channels for alignment."""
+    # Create 2-channel images where each channel has signal at the same offset.
+    pre_image = np.zeros((2, 120, 120), dtype=np.float32)
+    post_image = np.zeros((2, 120, 120), dtype=np.float32)
+
+    # Channel 0: signal at one location
+    pre_image[0, 60, 60] = 1.0
+    post_image[0, 70, 53] = 1.0
+
+    # Channel 1: signal at the same offset but different location
+    pre_image[1, 40, 40] = 1.0
+    post_image[1, 50, 33] = 1.0
+
+    calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
+    # Use both channels for alignment.
+    field = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=[0, 1])
+
+    np.testing.assert_array_equal([4, 2, 2], field.shape)
+    # Both channels have the same offset (7, -10), so the average xcorr
+    # should produce the same result.
+    np.testing.assert_array_equal(7 * np.ones((2, 2)), field[0, ...])
+    np.testing.assert_array_equal(-10 * np.ones((2, 2)), field[1, ...])
+
+  def test_multichannel_averaging_single_channel_list(self):
+    """Tests that channel=[0] gives same result as channel=0."""
+    pre_image = np.zeros((2, 120, 120), dtype=np.uint8)
+    post_image = np.zeros((2, 120, 120), dtype=np.uint8)
+
+    pre_image[0, 60, 60] = 255
+    post_image[0, 70, 53] = 255
+
+    calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
+    field_single = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=0)
+    field_list = calculator.flow_field(
+        pre_image, post_image, patch_size=80, step=40, batch_size=4,
+        channel=[0])
+
+    np.testing.assert_array_equal(field_single, field_list)
+
 
 if __name__ == '__main__':
   absltest.main()
