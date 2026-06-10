@@ -637,6 +637,12 @@ class JAXMaskedXCorrWithStatsCalculator:
         channel is not None and isinstance(channel, collections.abc.Sequence)
     )
 
+    if channel is not None and pre_image.ndim < 3:
+      raise ValueError(
+          "'channel' can only be used with multichannel inputs of shape "
+          "(c, y, x) or (c, z, y, x)."
+      )
+
     if use_multichannel:
       # Extract selected channels; result shape: [c, [z,] y, x]
       pre_image = jnp.stack([pre_image[c, ...] for c in channel], axis=0)
@@ -648,7 +654,6 @@ class JAXMaskedXCorrWithStatsCalculator:
       spatial_ndim = pre_image.ndim
     else:
       spatial_ndim = pre_image.ndim
-
     assert pre_image.ndim == post_image.ndim
 
     if not isinstance(patch_size, collections.abc.Sequence):
