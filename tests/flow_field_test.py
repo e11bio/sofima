@@ -149,13 +149,11 @@ class FlowFieldTest(absltest.TestCase):
     pre_image_2d[60, 60] = 255
     post_image_2d[70, 53] = 255
 
-    # Wrap in multichannel with noise on other channels.
-    pre_image_mc = np.stack([
-        pre_image_2d, np.random.randint(0, 50, (120, 120), dtype=np.uint8)
-    ])
-    post_image_mc = np.stack([
-        post_image_2d, np.random.randint(0, 50, (120, 120), dtype=np.uint8)
-    ])
+    # Wrap in multichannel with deterministic noise on other channels.
+    noise_pre = (np.arange(120 * 120, dtype=np.uint8).reshape(120, 120) % 50)
+    noise_post = ((np.arange(120 * 120, dtype=np.uint8).reshape(120, 120) * 3) % 50)
+    pre_image_mc = np.stack([pre_image_2d, noise_pre])
+    post_image_mc = np.stack([post_image_2d, noise_post])
 
     calculator = flow_field.JAXMaskedXCorrWithStatsCalculator()
     field_2d = calculator.flow_field(
