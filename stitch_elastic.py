@@ -90,13 +90,15 @@ def compute_flow_map3d(
     patch_size: Vector = (120, 120, 120),
     stride: Vector = (40, 40, 40),
     batch_size: int = 16,
+    channel: 'int | Sequence[int] | None' = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 3d tiles.
 
   Args:
     tile_map: maps (x, y) tile coordinates to ndarray-like objects storing
-      individual tile data; even object should have shape [1, z, y, x] and
-      allow standard indexing
+      individual tile data; each object should have shape [1, z, y, x] and
+      allow standard indexing. For multichannel data, tiles should have shape
+      [c, z, y, x] and 'channel' must be specified explicitly.
     tile_shape: XYZ shape of an individual 3d tile
     offset_map: [3, 1, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XYZ offset between the tiles (x,y) and (x+1,y) or
@@ -105,6 +107,13 @@ def compute_flow_map3d(
     patch_size: ZYX patch size in pixels
     stride: ZYX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
+    channel: specifies which channel(s) to use for flow estimation.
+      - None (default): assumes tiles have shape [1, z, y, x] and squeezes
+        the first dimension (identical to prior behavior).
+      - int: extracts a single channel from the tile.
+      - Sequence[int]: uses the specified channels, computing
+        cross-correlations independently on each and averaging before peak
+        detection.
 
   Returns:
     tuple of dictionaries:
@@ -179,13 +188,33 @@ def compute_flow_map3d(
       offset[axis] = -isec_curr.size[axis]
       offsets[(x, y)] = tuple(offset.tolist())
 
-      pre = tile_pre[isec_curr.to_slice4d()].squeeze(axis=0)
-      post = tile_post[isec_nbor.to_slice4d()].squeeze(axis=0)
+      pre = tile_pre[isec_curr.to_slice4d()]
+      post = tile_post[isec_nbor.to_slice4d()]
+
+      if channel is None:
+        # Original behavior: squeeze the leading dimension.
+        if pre.shape[0] != 1 or post.shape[0] != 1:
+          raise ValueError(
+              "Multichannel tiles (c, z, y, x) require an explicit 'channel' argument."
+          )
+        pre = pre.squeeze(axis=0)
+        post = post.squeeze(axis=0)
+        flow_channel = None
+      elif isinstance(channel, int):
+        pre = pre[channel, ...]
+        post = post[channel, ...]
+        flow_channel = None
+      else:
+        # Multi-channel: extract selected channels.
+        pre = np.stack([pre[c, ...] for c in channel], axis=0)
+        post = np.stack([post[c, ...] for c in channel], axis=0)
+        flow_channel = list(range(len(channel)))
 
       assert pre.shape == post.shape
 
       f = mfc.flow_field(
-          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size
+          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size,
+          channel=flow_channel
       )
       ret[(x, y)] = np.pad(
           f, [[0, 0]] + [[p, p - 1] for p in pad_zyx], constant_values=np.nan
@@ -202,11 +231,15 @@ def compute_flow_map(
     patch_size: Vector = (120, 120),
     stride: Vector = (20, 20),
     batch_size: int = 256,
+    channel: 'int | Sequence[int] | None' = None,
 ) -> tuple[TileFlow, TileOffset]:
   """Computes fine flow between two horizontally or vertically adjacent 2d tiles.
 
   Args:
-    tile_map: maps (x, y) tile coordinates to the tile image content
+    tile_map: maps (x, y) tile coordinates to the tile image content; tiles
+      should be 2D arrays (y, x) for default behavior. For multichannel tiles
+      (c, y, x), specify the 'channel' argument to select which channel(s) to
+      use.
     offset_map: [2, y, x]-shaped array where the vector spanning the first
       dimension is a coarse XY offset between the tiles (x,y) and (x+1,y) or
       (x,y+1)
@@ -214,6 +247,14 @@ def compute_flow_map(
     patch_size: YX patch size in pixels
     stride: YX stride for the flow map in pixels
     batch_size: number of flow vectors to estimate simultaneously
+    channel: specifies which channel(s) to use for flow estimation when
+      multichannel tiles are provided.
+      - None (default): uses tiles as-is, assuming they are 2D (y, x).
+        This is identical to prior behavior.
+      - int: extracts tile[channel, ...] before processing.
+      - Sequence[int]: uses the specified channels, computing
+        cross-correlations independently on each and averaging before peak
+        detection.
 
   Returns:
     tuple of dictionaries:
@@ -235,36 +276,58 @@ def compute_flow_map(
       pre = tile_map[x, y]
       post = tile_map[x + (1 - axis), y + axis]
 
+      if channel is None and pre.ndim == 3:
+        raise ValueError(
+            "Multichannel tiles (c, y, x) require an explicit 'channel' argument."
+        )
+
+      # Determine channel mode for flow_field.
+      if channel is not None and isinstance(channel, int):
+        pre = pre[channel, ...]
+        post = post[channel, ...]
+        flow_channel = None
+      elif channel is not None:
+        # Multi-channel: extract selected channels, keep stacked.
+        pre = np.stack([pre[c, ...] for c in channel], axis=0)
+        post = np.stack([post[c, ...] for c in channel], axis=0)
+        flow_channel = list(range(len(channel)))
+      else:
+        flow_channel = None
       offset = offset_map[:, y, x]  # off_x, off_y
 
       # The start coordinate should be aligned to a multiple of stride size.
       rounded_offset = stride[::-1] * np.round(offset / stride[::-1])
 
+      # Spatial dimensions start at index 0 for 2D, index 1 for multichannel.
+      sdim_off = 1 if flow_channel is not None else 0
+
       overlap = -int(offset[axis])
-      overlap = pre.shape[1 - axis] - (
-          (pre.shape[1 - axis] - overlap) // stride[1 - axis] * stride[1 - axis]
+      overlap = pre.shape[sdim_off + 1 - axis] - (
+          (pre.shape[sdim_off + 1 - axis] - overlap) // stride[1 - axis] * stride[1 - axis]
       )
 
       # Offset in the direction orthogonal to the overlap.
       ortho_offset = int(rounded_offset[1 - axis])
 
-      pre_sel = list(np.index_exp[:, :])
-      post_sel = list(np.index_exp[:, :])
-      pre_sel[1 - axis] = np.s_[-overlap:]
-      post_sel[1 - axis] = np.s_[:overlap]
+      ndim_sel = pre.ndim
+      pre_sel = [np.s_[:]] * ndim_sel
+      post_sel = [np.s_[:]] * ndim_sel
+      pre_sel[sdim_off + 1 - axis] = np.s_[-overlap:]
+      post_sel[sdim_off + 1 - axis] = np.s_[:overlap]
 
       if ortho_offset > 0:  # post is shifted down relative to pre
-        pre_sel[axis] = np.s_[ortho_offset:]
-        post_sel[axis] = np.s_[:-ortho_offset]
+        pre_sel[sdim_off + axis] = np.s_[ortho_offset:]
+        post_sel[sdim_off + axis] = np.s_[:-ortho_offset]
       elif ortho_offset < 0:  # post is shifted up relative to pre
-        pre_sel[axis] = np.s_[:ortho_offset]
-        post_sel[axis] = np.s_[-ortho_offset:]
+        pre_sel[sdim_off + axis] = np.s_[:ortho_offset]
+        post_sel[sdim_off + axis] = np.s_[-ortho_offset:]
 
       pre = pre[tuple(pre_sel)]
       post = post[tuple(post_sel)]
 
       f = mfc.flow_field(
-          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size
+          pre, post, patch_size=patch_size, step=stride, batch_size=batch_size,
+          channel=flow_channel
       )
       # The inverse flow (post, pre) is just -f, so it does not need to be
       # computed separately.

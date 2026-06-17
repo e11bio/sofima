@@ -22,7 +22,7 @@ by the estimated offset. This system is relaxed to establish an initial position
 for every tile based on cross-correlation between tile overlaps.
 """
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import jax.numpy as jnp
 import numpy as np
@@ -43,16 +43,43 @@ def _estimate_offset(
     filter_size: int = 10,
     masks: tuple[np.ndarray] | None = None,
 ) -> tuple[list[float], float]:
-  """Estimates the global offset vector between images 'a' and 'b'."""
-  # Mask areas with insufficient dynamic range.
-  a_mask = (
-      ndimage.maximum_filter(a, filter_size)
-      - ndimage.minimum_filter(a, filter_size)
-  ) < range_limit
-  b_mask = (
-      ndimage.maximum_filter(b, filter_size)
-      - ndimage.minimum_filter(b, filter_size)
-  ) < range_limit
+  """Estimates the global offset vector between images 'a' and 'b'.
+
+  Args:
+    a: 2D array (y, x) or multichannel array (c, y, x).
+    b: 2D array (y, x) or multichannel array (c, y, x).
+    range_limit: dynamic range threshold for masking.
+    filter_size: size of the filter for dynamic range evaluation.
+    masks: optional tuple of boolean masks.
+
+  Returns:
+    tuple of (offset_xy, peak_ratio).
+  """
+  multichannel = a.ndim == 3
+
+  if multichannel:
+    # Compute dynamic range mask as union across channels.
+    a_mask = np.zeros(a.shape[1:], dtype=bool)
+    b_mask = np.zeros(b.shape[1:], dtype=bool)
+    for c in range(a.shape[0]):
+      a_mask |= (
+          ndimage.maximum_filter(a[c], filter_size)
+          - ndimage.minimum_filter(a[c], filter_size)
+      ) < range_limit
+      b_mask |= (
+          ndimage.maximum_filter(b[c], filter_size)
+          - ndimage.minimum_filter(b[c], filter_size)
+      ) < range_limit
+  else:
+    # Mask areas with insufficient dynamic range.
+    a_mask = (
+        ndimage.maximum_filter(a, filter_size)
+        - ndimage.minimum_filter(a, filter_size)
+    ) < range_limit
+    b_mask = (
+        ndimage.maximum_filter(b, filter_size)
+        - ndimage.minimum_filter(b, filter_size)
+    ) < range_limit
 
   # Apply custom overlap masks
   if masks is not None:
@@ -60,10 +87,18 @@ def _estimate_offset(
     b_mask |= masks[1]
 
   mfc = flow_field.JAXMaskedXCorrWithStatsCalculator()
-  xo, yo, _, pr = mfc.flow_field(
-      a, b, pre_mask=a_mask, post_mask=b_mask, patch_size=a.shape, step=(1, 1),
-      batch_size=1
-  ).squeeze()
+  if multichannel:
+    patch_size = a.shape[1:]
+    xo, yo, _, pr = mfc.flow_field(
+        a, b, pre_mask=a_mask, post_mask=b_mask, patch_size=patch_size,
+        step=(1, 1), batch_size=1,
+        channel=list(range(a.shape[0]))
+    ).squeeze()
+  else:
+    xo, yo, _, pr = mfc.flow_field(
+        a, b, pre_mask=a_mask, post_mask=b_mask, patch_size=a.shape,
+        step=(1, 1), batch_size=1
+    ).squeeze()
   return [xo, yo], abs(pr)
 
 
@@ -75,6 +110,15 @@ def _estimate_offset_horiz(
     filter_size: int,
     masks: tuple[np.ndarray] | None = None,
 ) -> tuple[list[float], float]:
+  if left.ndim == 3:
+    # Multichannel: slice along last (x) axis for each channel.
+    return _estimate_offset(
+        a=left[:, :, -overlap:],
+        b=right[:, :, :overlap],
+        range_limit=range_limit,
+        filter_size=filter_size,
+        masks=masks
+    )
   return _estimate_offset(
       a=left[:, -overlap:],
       b=right[:, :overlap],
@@ -92,6 +136,15 @@ def _estimate_offset_vert(
     filter_size: int,
     masks: tuple[np.ndarray] | None,
 ) -> tuple[list[float], float]:
+  if top.ndim == 3:
+    # Multichannel: slice along second-to-last (y) axis for each channel.
+    return _estimate_offset(
+        a=top[:, -overlap:, :],
+        b=bot[:, :overlap, :],
+        range_limit=range_limit,
+        masks=masks,
+        filter_size=filter_size
+    )
   return _estimate_offset(
       a=top[-overlap:, :],
       b=bot[:overlap, :],
@@ -108,13 +161,16 @@ def compute_coarse_offsets(
     min_range=(10, 100, 0),
     min_overlap=160,
     filter_size=10,
-    mask_map: MaskMap | None = None
+    mask_map: MaskMap | None = None,
+    channel: 'int | Sequence[int] | None' = None,
 ) -> tuple[np.ndarray, np.ndarray]:
   """Computes a coarse offset between every neighboring tile pair.
 
   Args:
     yx_shape: vertical and horizontal number of tiles
-    tile_map: maps (x, y) tile coordinate to the tile image
+    tile_map: maps (x, y) tile coordinate to the tile image; tiles should be
+      2D arrays (y, x) for default behavior. For multichannel tiles (c, y, x),
+      specify the 'channel' argument to select which channel(s) to use.
     overlaps_xy: pair of two overlap sequences to try, for NN tiles in the X and
       Y direction, respectively; these overlaps define the number of pixels in
       the given dimension used to compute the offset vector
@@ -128,6 +184,13 @@ def compute_coarse_offsets(
     mask_map: map from (x, y) tile coordinates to boolean arrays (same shape as
       tile images); If present, the elements of the mask evaluating to True
       define the pixels that should be masked during coarse offsets estimation.
+    channel: specifies which channel(s) to use for offset estimation when
+      multichannel tiles are provided.
+      - None (default): uses tiles as-is, assuming they are 2D (y, x).
+        This is identical to prior behavior.
+      - int: extracts tile[channel, ...] before processing.
+      - Sequence[int]: uses the specified channels, computing cross-correlations
+        independently on each and averaging before peak detection.
 
   Returns:
     two arrays of shape [2, 1] + yx_shape, where the dimensions are:
@@ -146,6 +209,18 @@ def compute_coarse_offsets(
     could not be obtained. Values that cannot be computed because of missing
     tiles are set to nan.
   """
+
+  def _select_channel(tile):
+    if channel is None:
+      if tile.ndim == 3:
+        raise ValueError(
+            "Multichannel tiles (c, y, x) require an explicit 'channel' argument."
+        )
+      return tile
+    if isinstance(channel, int):
+      return tile[channel, ...]
+    # Return stacked channels for multi-channel averaging.
+    return np.stack([tile[c, ...] for c in channel], axis=0)
 
   def _find_offset(estimate_fn, pre, post, overlaps, max_ortho_shift, axis, masks=None):
     def _is_valid_offset(offset, axis):
@@ -222,8 +297,8 @@ def compute_coarse_offsets(
       if not ((x, y) in tile_map and (x + 1, y) in tile_map):
         continue
 
-      left = tile_map[(x, y)]
-      right = tile_map[(x + 1, y)]
+      left = _select_channel(tile_map[(x, y)])
+      right = _select_channel(tile_map[(x + 1, y)])
 
       # Load and crop overlap masks
       masks_x = None
@@ -249,8 +324,8 @@ def compute_coarse_offsets(
       if not ((x, y) in tile_map and (x, y + 1) in tile_map):
         continue
 
-      top = tile_map[(x, y)]
-      bot = tile_map[(x, y + 1)]
+      top = _select_channel(tile_map[(x, y)])
+      bot = _select_channel(tile_map[(x, y + 1)])
 
       # Load and crop overlap masks
       masks_y = None

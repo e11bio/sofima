@@ -126,5 +126,48 @@ class WarpTest(absltest.TestCase):
     np.testing.assert_array_equal(warped, expected)
 
 
+  def test_warp_subvolume_multichannel(self):
+    """Tests that multichannel images are warped correctly."""
+    # Create a 3-channel image.
+    image = np.zeros((3, 1, 100, 100), dtype=np.uint16)
+    image[0, 0, 40, 30] = 100
+    image[1, 0, 40, 30] = 200
+    image[2, 0, 40, 30] = 300
+    image_box = bounding_box.BoundingBox(start=(0, 0, 0), size=(100, 100, 1))
+
+    coord_map = np.zeros((2, 1, 10, 10))
+    coord_map[0, :, :, :] = 5
+    coord_map[1, :, :, :] = 10
+    map_box = bounding_box.BoundingBox(start=(0, 0, 0), size=(10, 10, 1))
+    edge_len = 10
+
+    out_box = bounding_box.BoundingBox(start=(0, 0, 0), size=(100, 100, 1))
+    warped = warp.warp_subvolume(
+        image, image_box, coord_map, map_box, edge_len, out_box)
+
+    # All channels should be warped with same displacement.
+    self.assertEqual(warped.shape, (3, 1, 100, 100))
+    self.assertEqual(warped[0, 0, 30, 25], 100)
+    self.assertEqual(warped[1, 0, 30, 25], 200)
+    self.assertEqual(warped[2, 0, 30, 25], 300)
+
+  def test_ndimage_warp_translate(self):
+    """Tests ndimage_warp with a simple translation."""
+    image = np.zeros((100, 100), dtype=np.uint16)
+    image[40, 30] = 42
+    image[50, 40] = 16
+
+    coord_map = np.zeros((2, 25, 25))
+    coord_map[0, :, :] = 5
+    coord_map[1, :, :] = 10
+
+    warped = warp.ndimage_warp(
+        image, coord_map, (4, 5), (100, 100), (0, 0), order=1)
+
+    # Verify the data was warped (shifted).
+    self.assertEqual(warped.shape, (100, 100))
+    self.assertEqual(warped[30, 25], 42)
+
+
 if __name__ == '__main__':
   absltest.main()
